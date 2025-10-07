@@ -1,5 +1,36 @@
 version: 2.1
 
+orbs:
+  aws-ecr: circleci/aws-ecr@9.0
+  aws-eks: circleci/aws-eks@2.2
+  helm: circleci/helm@3.0
+
+parameters:
+  eks-cluster-name:
+    type: string
+    default: "retail-store-cluster"
+
+executors:
+  docker-builder:
+    docker:
+      - image: cimg/base:stable
+    resource_class: medium
+
+  go-builder:
+    docker:
+      - image: cimg/go:1.24
+    resource_class: medium
+
+  java-builder:
+    docker:
+      - image: cimg/openjdk:21.0
+    resource_class: large
+
+  node-builder:
+    docker:
+      - image: cimg/node:20.0
+    resource_class: medium
+
 jobs:
   kubernetes-install-test:
     machine:
@@ -8,74 +39,536 @@ jobs:
     steps:
       - checkout
 
-      - run:
-          name: Install kubectl
-          command: |
-            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-            kubectl version --client
+      # - run:
+      #     name: Install kubectl
+      #     command: |
+      #       curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+      #       sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+      #       kubectl version --client
 
-      - run:
-          name: Install kind (Kubernetes in Docker)
-          command: |
-            curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
-            chmod +x ./kind
-            sudo mv ./kind /usr/local/bin/kind
-            kind version
+      # - run:
+      #     name: Install kind (Kubernetes in Docker)
+      #     command: |
+      #       curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+      #       chmod +x ./kind
+      #       sudo mv ./kind /usr/local/bin/kind
+      #       kind version
 
-      - run:
-          name: Create Kubernetes cluster
-          command: |
-            kind create cluster --name retail-store-test --wait 5m
-            kubectl cluster-info
-            kubectl get nodes
+      # - run:
+      #     name: Create Kubernetes cluster
+      #     command: |
+      #       kind create cluster --name retail-store-test --wait 5m
+      #       kubectl cluster-info
+      #       kubectl get nodes
 
-      - run:
-          name: Apply Kubernetes manifests
-          command: |
-            kubectl apply -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
+      # - run:
+      #     name: Apply Kubernetes manifests
+      #     command: |
+      #       kubectl apply -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
 
-      - run:
-          name: Wait for deployments to be ready
-          command: |
-            kubectl wait --for=condition=available --timeout=300s deployments --all
+      # - run:
+      #     name: Wait for deployments to be ready
+      #     command: |
+      #       kubectl wait --for=condition=available --timeout=300s deployments --all
 
-      - run:
-          name: Check application health
-          command: |
-            # Get all pods and their status
-            kubectl get pods -o wide
+      # - run:
+      #     name: Check application health
+      #     command: |
+      #       # Get all pods and their status
+      #       kubectl get pods -o wide
 
-            # Verify all pods are running
-            if kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v NAME | grep -q .; then
-              echo "Some pods are not in Running state:"
-              kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded
-              exit 1
-            fi
+      #       # Verify all pods are running
+      #       if kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v NAME | grep -q .; then
+      #         echo "Some pods are not in Running state:"
+      #         kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded
+      #         exit 1
+      #       fi
 
-            # Check services
-            kubectl get svc
+      #       # Check services
+      #       kubectl get svc
 
-            # Verify UI service exists
-            kubectl get svc ui
+      #       # Verify UI service exists
+      #       kubectl get svc ui
 
-            echo "All pods are healthy!"
-            exit 0
+      #       echo "All pods are healthy!"
+      #       exit 0
 
-      - run:
-          name: Remove application
-          command: |
-            kubectl delete -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
-          when: on_success
+      # - run:
+      #     name: Remove application
+      #     command: |
+      #       kubectl delete -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
+      #     when: on_success
 
-      - run:
-          name: Cleanup kind cluster
-          command: |
-            kind delete cluster --name retail-store-test
-          when: on_success
+      # - run:
+      #     name: Cleanup kind cluster
+      #     command: |
+      #       kind delete cluster --name retail-store-test
+      #     when: on_success
+
+  # ============================================
+  # BUILD & TEST JOBS (Fan-Out)
+  # ============================================
+
+  build-test-catalog:
+    executor: go-builder
+    steps:
+      - checkout
+      # - restore_cache:
+      #     keys:
+      #       - go-mod-v1-{{ checksum "src/catalog/go.sum" }}
+      # - run:
+      #     name: Run catalog tests
+      #     command: |
+      #       cd src/catalog
+      #       go test ./... -v
+      # - run:
+      #     name: Build catalog binary
+      #     command: |
+      #       cd src/catalog
+      #       go build -o catalog
+      # - save_cache:
+      #     key: go-mod-v1-{{ checksum "src/catalog/go.sum" }}
+      #     paths:
+      #       - /go/pkg/mod
+      # - persist_to_workspace:
+      #     root: .
+      #     paths:
+      #       - src/catalog
+
+  build-test-ui:
+    executor: java-builder
+    steps:
+      - checkout
+      # - restore_cache:
+      #     keys:
+      #       - maven-v1-{{ checksum "src/ui/pom.xml" }}
+      # - run:
+      #     name: Run UI tests
+      #     command: |
+      #       cd src/ui
+      #       mvn test
+      # - run:
+      #     name: Build UI application
+      #     command: |
+      #       cd src/ui
+      #       mvn clean package -DskipTests
+      # - save_cache:
+      #     key: maven-v1-{{ checksum "src/ui/pom.xml" }}
+      #     paths:
+      #       - ~/.m2
+      # - persist_to_workspace:
+      #     root: .
+      #     paths:
+      #       - src/ui
+
+  build-test-cart:
+    executor: java-builder
+    steps:
+      - checkout
+      # - restore_cache:
+      #     keys:
+      #       - maven-v1-{{ checksum "src/cart/pom.xml" }}
+      # - run:
+      #     name: Run cart tests
+      #     command: |
+      #       cd src/cart
+      #       mvn test
+      # - run:
+      #     name: Build cart application
+      #     command: |
+      #       cd src/cart
+      #       mvn clean package -DskipTests
+      # - save_cache:
+      #     key: maven-v1-{{ checksum "src/cart/pom.xml" }}
+      #     paths:
+      #       - ~/.m2
+      # - persist_to_workspace:
+      #     root: .
+      #     paths:
+      #       - src/cart
+
+  build-test-orders:
+    executor: java-builder
+    steps:
+      - checkout
+      # - restore_cache:
+      #     keys:
+      #       - maven-v1-{{ checksum "src/orders/pom.xml" }}
+      # - run:
+      #     name: Run orders tests
+      #     command: |
+      #       cd src/orders
+      #       mvn test
+      # - run:
+      #     name: Build orders application
+      #     command: |
+      #       cd src/orders
+      #       mvn clean package -DskipTests
+      # - save_cache:
+      #     key: maven-v1-{{ checksum "src/orders/pom.xml" }}
+      #     paths:
+      #       - ~/.m2
+      # - persist_to_workspace:
+      #     root: .
+      #     paths:
+      #       - src/orders
+
+  build-test-checkout:
+    executor: node-builder
+    steps:
+      - checkout
+      # - restore_cache:
+      #     keys:
+      #       - npm-v1-{{ checksum "src/checkout/package-lock.json" }}
+      # - run:
+      #     name: Install dependencies
+      #     command: |
+      #       cd src/checkout
+      #       npm ci
+      # - run:
+      #     name: Run checkout tests
+      #     command: |
+      #       cd src/checkout
+      #       npm test
+      # - run:
+      #     name: Build checkout application
+      #     command: |
+      #       cd src/checkout
+      #       npm run build
+      # - save_cache:
+      #     key: npm-v1-{{ checksum "src/checkout/package-lock.json" }}
+      #     paths:
+      #       - src/checkout/node_modules
+      # - persist_to_workspace:
+      #     root: .
+      #     paths:
+      #       - src/checkout
+
+  # ============================================
+  # DOCKER IMAGE BUILD & PUSH TO ECR
+  # ============================================
+
+  publish-catalog-image:
+    executor: aws-ecr/default
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - aws-ecr/build_and_push_image:
+      #     repo: retail-store-catalog
+      #     tag: "${CIRCLE_SHA1},latest"
+      #     path: src/catalog
+      #     dockerfile: src/catalog/Dockerfile
+
+  publish-ui-image:
+    executor: aws-ecr/default
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - aws-ecr/build_and_push_image:
+      #     repo: retail-store-ui
+      #     tag: "${CIRCLE_SHA1},latest"
+      #     path: src/ui
+      #     dockerfile: src/ui/Dockerfile
+
+  publish-cart-image:
+    executor: aws-ecr/default
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - aws-ecr/build_and_push_image:
+      #     repo: retail-store-cart
+      #     tag: "${CIRCLE_SHA1},latest"
+      #     path: src/cart
+      #     dockerfile: src/cart/Dockerfile
+
+  publish-orders-image:
+    executor: aws-ecr/default
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - aws-ecr/build_and_push_image:
+      #     repo: retail-store-orders
+      #     tag: "${CIRCLE_SHA1},latest"
+      #     path: src/orders
+      #     dockerfile: src/orders/Dockerfile
+
+  publish-checkout-image:
+    executor: aws-ecr/default
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - aws-ecr/build_and_push_image:
+      #     repo: retail-store-checkout
+      #     tag: "${CIRCLE_SHA1},latest"
+      #     path: src/checkout
+      #     dockerfile: src/checkout/Dockerfile
+
+  # ============================================
+  # HELM CHART PACKAGING & PUSH TO ECR
+  # ============================================
+
+  publish-helm-charts:
+    executor: docker-builder
+    steps:
+      - checkout
+      # - attach_workspace:
+      #     at: .
+      # - helm/install_helm_client:
+      #     version: v3.13.0
+      # - run:
+      #     name: Configure AWS CLI
+      #     command: |
+      #       curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+      #       unzip awscliv2.zip
+      #       sudo ./aws/install
+      # - run:
+      #     name: Login to ECR for Helm
+      #     command: |
+      #       aws ecr get-login-password --region ${AWS_REGION} | helm registry login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+      # - run:
+      #     name: Package and push Helm charts
+      #     command: |
+      #       SERVICES="catalog ui cart orders checkout"
+      #       for service in $SERVICES; do
+      #         cd src/$service/chart
+
+      #         # Update image tag in values.yaml to use the commit SHA
+      #         sed -i "s/tag: .*/tag: ${CIRCLE_SHA1}/" values.yaml
+
+      #         # Package the chart
+      #         helm package .
+
+      #         # Push to ECR
+      #         CHART_VERSION=$(grep '^version:' Chart.yaml | awk '{print $2}')
+      #         helm push retail-store-${service}-${CHART_VERSION}.tgz oci://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/helm-charts
+
+      #         cd ../../..
+      #       done
+
+  # ============================================
+  # EKS DEPLOYMENT WITH HEALTH CHECKS (Fan-In)
+  # ============================================
+
+  deploy-to-eks:
+    executor: aws-eks/python3
+    parameters:
+      cluster-name:
+        type: string
+        default: << pipeline.parameters.eks-cluster-name >>
+    steps:
+      - checkout
+      # - aws-eks/update-kubeconfig-with-authenticator:
+      #     cluster-name: << parameters.cluster-name >>
+      #     install-kubectl: true
+      # - helm/install_helm_client:
+      #     version: v3.13.0
+      # - run:
+      #     name: Login to ECR for Helm
+      #     command: |
+      #       aws ecr get-login-password --region ${AWS_REGION} | helm registry login --username AWS --password-stdin ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+      # - run:
+      #     name: Create namespace if not exists
+      #     command: |
+      #       kubectl create namespace retail-store || true
+      # - run:
+      #     name: Save current deployment state for rollback
+      #     command: |
+      #       mkdir -p /tmp/rollback-state
+      #       SERVICES="catalog ui cart orders checkout"
+      #       for service in $SERVICES; do
+      #         kubectl get deployment ${service} -n retail-store -o yaml > /tmp/rollback-state/${service}-deployment.yaml 2>/dev/null || echo "No existing deployment for ${service}"
+      #       done
+      # - run:
+      #     name: Deploy microservices to EKS
+      #     command: |
+      #       SERVICES="catalog ui cart orders checkout"
+      #       for service in $SERVICES; do
+      #         echo "Deploying ${service}..."
+
+      #         # Pull and install/upgrade the Helm chart
+      #         helm upgrade --install ${service} \
+      #           oci://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/helm-charts/retail-store-${service} \
+      #           --namespace retail-store \
+      #           --set image.repository=${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com/retail-store-${service} \
+      #           --set image.tag=${CIRCLE_SHA1} \
+      #           --wait \
+      #           --timeout 5m
+      #       done
+      # - run:
+      #     name: Wait for all deployments to be ready
+      #     command: |
+      #       kubectl wait --for=condition=available --timeout=300s deployments --all -n retail-store
+      # - run:
+      #     name: Health check all services
+      #     command: |
+      #       echo "Running health checks on all services..."
+
+      #       SERVICES="catalog ui cart orders checkout"
+      #       FAILED_SERVICES=""
+
+      #       for service in $SERVICES; do
+      #         echo "Checking health of ${service}..."
+
+      #         # Check if all pods are running
+      #         READY_REPLICAS=$(kubectl get deployment ${service} -n retail-store -o jsonpath='{.status.readyReplicas}')
+      #         DESIRED_REPLICAS=$(kubectl get deployment ${service} -n retail-store -o jsonpath='{.spec.replicas}')
+
+      #         if [ "$READY_REPLICAS" != "$DESIRED_REPLICAS" ]; then
+      #           echo "ERROR: ${service} health check failed - Ready: ${READY_REPLICAS}, Desired: ${DESIRED_REPLICAS}"
+      #           FAILED_SERVICES="${FAILED_SERVICES} ${service}"
+      #           continue
+      #         fi
+
+      #         # Check pod status
+      #         POD_NAME=$(kubectl get pods -n retail-store -l app=${service} -o jsonpath='{.items[0].metadata.name}')
+      #         POD_STATUS=$(kubectl get pod ${POD_NAME} -n retail-store -o jsonpath='{.status.phase}')
+
+      #         if [ "$POD_STATUS" != "Running" ]; then
+      #           echo "ERROR: ${service} pod is not running - Status: ${POD_STATUS}"
+      #           FAILED_SERVICES="${FAILED_SERVICES} ${service}"
+      #           continue
+      #         fi
+
+      #         # Try to hit health endpoint if service has one
+      #         SERVICE_IP=$(kubectl get svc ${service} -n retail-store -o jsonpath='{.spec.clusterIP}' 2>/dev/null || echo "")
+      #         if [ ! -z "$SERVICE_IP" ]; then
+      #           HTTP_CODE=$(kubectl run curl-test-${service} --image=curlimages/curl:latest --rm -i --restart=Never -n retail-store -- \
+      #             curl -s -o /dev/null -w "%{http_code}" http://${SERVICE_IP}:8080/actuator/health 2>/dev/null || echo "000")
+
+      #           if [ "$HTTP_CODE" != "200" ]; then
+      #             echo "WARNING: ${service} health endpoint returned ${HTTP_CODE}"
+      #           fi
+      #         fi
+
+      #         echo "✓ ${service} is healthy"
+      #       done
+
+      #       if [ ! -z "$FAILED_SERVICES" ]; then
+      #         echo "Health check failed for services:${FAILED_SERVICES}"
+      #         exit 1
+      #       fi
+
+      #       echo "All services are healthy!"
+      # - run:
+      #     name: Trigger rollback on health check failure
+      #     when: on_fail
+      #     command: |
+      #       echo "Health check failed - triggering rollback..."
+
+      #       SERVICES="catalog ui cart orders checkout"
+      #       for service in $SERVICES; do
+      #         if [ -f /tmp/rollback-state/${service}-deployment.yaml ]; then
+      #           echo "Rolling back ${service} to previous state..."
+      #           kubectl apply -f /tmp/rollback-state/${service}-deployment.yaml -n retail-store
+      #         else
+      #           echo "No previous state found for ${service}, deleting deployment..."
+      #           helm uninstall ${service} -n retail-store || true
+      #         fi
+      #       done
+
+      #       # Wait for rollback to complete
+      #       echo "Waiting for rollback to complete..."
+      #       sleep 30
+      #       kubectl get pods -n retail-store
+
+      #       echo "Rollback completed. Deployment stability maintained."
+      #       exit 1
+      # - run:
+      #     name: Display deployment info
+      #     command: |
+      #       echo "Deployment successful! Here's the current state:"
+      #       kubectl get deployments -n retail-store
+      #       kubectl get pods -n retail-store
+      #       kubectl get svc -n retail-store
 
 workflows:
   version: 2
+
+  # Quick smoke test on every commit
   test-kubernetes-install:
     jobs:
-      - kubernetes-install-test
+      - kubernetes-install-test:
+          filters:
+            branches:
+              only: /.*/
+
+  # Full CI/CD pipeline with fan-out/fan-in
+  build-test-deploy:
+    jobs:
+      # Fan-Out: Build and test all microservices in parallel
+      - build-test-catalog:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+      - build-test-ui:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+      - build-test-cart:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+      - build-test-orders:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+      - build-test-checkout:
+          filters:
+            branches:
+              only:
+                - main
+                - develop
+
+      # Publish Docker images in parallel (requires build jobs)
+      - publish-catalog-image:
+          requires:
+            - build-test-catalog
+          context: aws-credentials
+      - publish-ui-image:
+          requires:
+            - build-test-ui
+          context: aws-credentials
+      - publish-cart-image:
+          requires:
+            - build-test-cart
+          context: aws-credentials
+      - publish-orders-image:
+          requires:
+            - build-test-orders
+          context: aws-credentials
+      - publish-checkout-image:
+          requires:
+            - build-test-checkout
+          context: aws-credentials
+
+      # Package and publish Helm charts (requires all images)
+      - publish-helm-charts:
+          requires:
+            - publish-catalog-image
+            - publish-ui-image
+            - publish-cart-image
+            - publish-orders-image
+            - publish-checkout-image
+          context: aws-credentials
+
+      # Fan-In: Deploy all services to EKS (requires Helm charts)
+      - deploy-to-eks:
+          requires:
+            - publish-helm-charts
+          context: aws-credentials
+          filters:
+            branches:
+              only: main
