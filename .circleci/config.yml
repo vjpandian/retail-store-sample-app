@@ -355,7 +355,8 @@ jobs:
   # ============================================
 
   deploy-to-eks:
-    executor: aws-eks/python3
+    docker:
+      - image: cimg/base:current
     parameters:
       cluster-name:
         type: string
