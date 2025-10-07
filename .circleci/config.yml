@@ -1,0 +1,78 @@
+version: 2.1
+
+jobs:
+  kubernetes-install-test:
+    machine:
+      image: ubuntu-2204:2024.01.1
+    resource_class: medium
+    steps:
+      - checkout
+
+      - run:
+          name: Install kubectl
+          command: |
+            curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+            sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+            kubectl version --client
+
+      - run:
+          name: Install kind (Kubernetes in Docker)
+          command: |
+            curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.20.0/kind-linux-amd64
+            chmod +x ./kind
+            sudo mv ./kind /usr/local/bin/kind
+            kind version
+
+      - run:
+          name: Create Kubernetes cluster
+          command: |
+            kind create cluster --name retail-store-test --wait 5m
+            kubectl cluster-info
+            kubectl get nodes
+
+      - run:
+          name: Apply Kubernetes manifests
+          command: |
+            kubectl apply -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
+
+      - run:
+          name: Wait for deployments to be ready
+          command: |
+            kubectl wait --for=condition=available --timeout=300s deployments --all
+
+      - run:
+          name: Check application health
+          command: |
+            # Get all pods and their status
+            kubectl get pods -o wide
+
+            # Verify all pods are running
+            if kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded | grep -v NAME | grep -q .; then
+              echo "Some pods are not in Running state:"
+              kubectl get pods --field-selector=status.phase!=Running,status.phase!=Succeeded
+              exit 1
+            fi
+
+            # Check services
+            kubectl get svc
+
+            # Verify UI service exists
+            kubectl get svc ui
+
+      - run:
+          name: Remove application
+          command: |
+            kubectl delete -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
+          when: always
+
+      - run:
+          name: Cleanup kind cluster
+          command: |
+            kind delete cluster --name retail-store-test
+          when: always
+
+workflows:
+  version: 2
+  test-kubernetes-install:
+    jobs:
+      - kubernetes-install-test
