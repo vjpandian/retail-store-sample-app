@@ -3,7 +3,7 @@ version: 2.1
 jobs:
   kubernetes-install-test:
     machine:
-      image: ubuntu-2204:2024.01.1
+      image: ubuntu-2404:current
     resource_class: medium
     steps:
       - checkout
@@ -59,17 +59,20 @@ jobs:
             # Verify UI service exists
             kubectl get svc ui
 
+            echo "All pods are healthy!"
+            exit 0
+
       - run:
           name: Remove application
           command: |
             kubectl delete -f https://github.com/aws-containers/retail-store-sample-app/releases/latest/download/kubernetes.yaml
-          when: always
+          when: on_success
 
       - run:
           name: Cleanup kind cluster
           command: |
             kind delete cluster --name retail-store-test
-          when: always
+          when: on_success
 
 workflows:
   version: 2
